@@ -37,6 +37,18 @@ class GridRoomBase(GymCompatibleEnvironment):
     reward_description = (
         "Rewards are room-specific and will be finalized in the next stages."
     )
+    ACTION_DELTAS: dict[int, tuple[int, int]] = {
+        0: (-1, 0),
+        1: (0, 1),
+        2: (1, 0),
+        3: (0, -1),
+    }
+    ACTION_LABELS: dict[int, str] = {
+        0: "U",
+        1: "R",
+        2: "D",
+        3: "L",
+    }
 
     def __init__(self, config: GridRoomConfig | None = None) -> None:
         self.config = config or GridRoomConfig()
@@ -68,6 +80,84 @@ class GridRoomBase(GymCompatibleEnvironment):
             "goal_position": self.goal_position,
         }
         return observation, info
+
+    def iter_states(self) -> list[tuple[int, int]]:
+        """Return all traversable states in the grid."""
+
+        states: list[tuple[int, int]] = []
+        for row in range(self.config.grid_height):
+            for col in range(self.config.grid_width):
+                state = (row, col)
+                if state not in self.walls:
+                    states.append(state)
+        return states
+
+    def is_within_bounds(self, state: tuple[int, int]) -> bool:
+        """Check whether a state lies inside the grid boundaries."""
+
+        row, col = state
+        return 0 <= row < self.config.grid_height and 0 <= col < self.config.grid_width
+
+    def is_walkable(self, state: tuple[int, int]) -> bool:
+        """Check whether the agent can occupy a state."""
+
+        return self.is_within_bounds(state) and state not in self.walls
+
+    def is_terminal_state(self, state: tuple[int, int]) -> bool:
+        """Return whether the supplied state is terminal."""
+
+        return state == self.goal_position
+
+    def is_trap_state(self, state: tuple[int, int]) -> bool:
+        """Return whether the supplied state is a trap."""
+
+        return state in self.traps
+
+    def is_slippery_state(self, state: tuple[int, int]) -> bool:
+        """Return whether the supplied state is slippery."""
+
+        return state in self.slippery_cells
+
+    def get_intended_next_state(
+        self,
+        state: tuple[int, int],
+        action: int,
+    ) -> tuple[int, int]:
+        """Return the cell that an action would target, without legality checks."""
+
+        delta_row, delta_col = self.ACTION_DELTAS[action]
+        return (state[0] + delta_row, state[1] + delta_col)
+
+    def is_legal_action(self, state: tuple[int, int], action: int) -> bool:
+        """Return whether an action stays inside the grid and avoids walls."""
+
+        return self.is_walkable(self.get_intended_next_state(state, action))
+
+    def get_legal_actions(self, state: tuple[int, int]) -> list[int]:
+        """Return only actions that are legal from the given state.
+
+        The available action set can change from cell to cell because boundary
+        and wall cells block some directions at selection time.
+        """
+
+        return [
+            action
+            for action in range(self.action_space.n)
+            if self.is_legal_action(state, action)
+        ]
+
+    def move_from_state(self, state: tuple[int, int], action: int) -> tuple[int, int]:
+        """Apply a movement using a legal action, or stay if the action is illegal."""
+
+        next_state = self.get_intended_next_state(state, action)
+        if not self.is_walkable(next_state):
+            return state
+        return next_state
+
+    def get_action_label(self, action: int) -> str:
+        """Return a short human-readable label for an action index."""
+
+        return self.ACTION_LABELS[action]
 
     def step(
         self,
