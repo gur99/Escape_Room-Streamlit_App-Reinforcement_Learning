@@ -47,6 +47,23 @@ GRID_CELL_SIZE_REM = 4.0
 ITERATION_BROWSER_GRID_CELL_SIZE_REM = 3.15
 ITERATION_BROWSER_GRID_SPACING_REM = 0.16
 
+# Inset frame drawn inside the cell so rounded corners stay complete after deploy.
+GRID_CELL_FRAME_WIDTH_PX = 2
+GRID_CELL_DEFAULT_FRAME_COLOR = "#cbd5e1"
+GRID_CELL_FRAME_CSS = f"""
+  border: none;
+  outline: none;
+  box-shadow: inset 0 0 0 {GRID_CELL_FRAME_WIDTH_PX}px var(--cell-frame-color, {GRID_CELL_DEFAULT_FRAME_COLOR});
+  background-clip: padding-box;
+  box-sizing: border-box;
+"""
+
+
+def _cell_frame_css_variable(border_color: str) -> str:
+    """Return an inline CSS variable that selects the inset cell frame color."""
+
+    return f"--cell-frame-color:{border_color};"
+
 
 def compute_iteration_browser_grid_height_rem(grid_rows: int) -> float:
     """Return the rendered grid height in rem, including the axis header row."""
@@ -892,7 +909,8 @@ def build_grid_html(
             )
             style = (
                 "position:relative;"
-                f"background:{background};color:{text_color};border:3px solid {border_color};"
+                f"background:{background};color:{text_color};"
+                f"{_cell_frame_css_variable(border_color)}"
                 f"font-size:{font_size};"
             )
             if policy_arrow:
@@ -930,20 +948,20 @@ def build_grid_html(
     is_compact_grid = resolved_cell_size_rem < GRID_CELL_SIZE_REM
     grid_spacing = "0.16rem" if is_compact_grid else "0.28rem"
     grid_margin = "0.25rem 0 0.35rem 0" if is_compact_grid else "0.5rem 0 1rem 0"
-    grid_overflow = "visible" if is_compact_grid else "auto"
     wrapper_class = "escape-grid-wrapper"
     if show_value_policy_overlay:
         wrapper_class += " escape-grid-value-policy"
     return f"""
     <style>
       .escape-grid-wrapper {{
-        overflow-x: {grid_overflow};
+        overflow: visible;
         margin: {grid_margin};
       }}
       .escape-grid-table {{
         border-collapse: separate;
         border-spacing: {grid_spacing};
         margin: 0;
+        table-layout: fixed;
       }}
       .escape-grid-table .grid-axis,
       .escape-grid-table .grid-corner {{
@@ -964,12 +982,12 @@ def build_grid_html(
         vertical-align: middle;
         border-radius: 0.8rem;
         font-weight: 700;
-        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+        {GRID_CELL_FRAME_CSS}
         white-space: normal;
         line-height: 1.1;
         padding: 0.2rem;
-        box-sizing: border-box;
         overflow: visible;
+        isolation: isolate;
       }}
       .escape-grid-table .grid-cell-main {{
         display: inline-flex;
@@ -1189,7 +1207,7 @@ def build_unified_room_grid_html(grid: list[list[dict[str, Any]]]) -> str:
                 (
                     "<td class='unified-cell' "
                     f"title=\"{title}\" "
-                    f"style=\"background:{background};color:{text_color};border-color:{border_color};\">"
+                    f"style=\"background:{background};color:{text_color};{_cell_frame_css_variable(border_color)}\">"
                     f"{body}"
                     "</td>"
                 )
@@ -1200,7 +1218,7 @@ def build_unified_room_grid_html(grid: list[list[dict[str, Any]]]) -> str:
     return f"""
     <style>
       .unified-grid-wrapper {{
-        overflow-x: auto;
+        overflow: visible;
         margin: 0.5rem 0 1rem 0;
       }}
       .unified-grid-table {{
@@ -1226,13 +1244,13 @@ def build_unified_room_grid_html(grid: list[list[dict[str, Any]]]) -> str:
         max-width: var(--cell-size);
         min-height: var(--cell-size);
         max-height: var(--cell-size);
-        border: 2px solid #cbd5e1;
         border-radius: 0.8rem;
         vertical-align: middle;
         text-align: center;
         padding: 0;
-        box-sizing: border-box;
+        {GRID_CELL_FRAME_CSS}
         overflow: visible;
+        isolation: isolate;
       }}
       .compass {{
         position: relative;
@@ -1437,7 +1455,7 @@ def build_unified_legend_html() -> str:
         legend_items.append(
             (
                 "<span class='escape-legend-item'>"
-                f"<span class='escape-legend-swatch' style=\"background:{background};border-color:{border};color:{text_color};\">"
+                f"<span class='escape-legend-swatch' style=\"background:{background};{_cell_frame_css_variable(border)};color:{text_color};\">"
                 f"{html.escape(symbol)}"
                 "</span>"
                 f"{html.escape(label)}"
@@ -1464,13 +1482,14 @@ def build_unified_legend_html() -> str:
         min-width: 2.2rem;
         height: 1.55rem;
         border-radius: 0.4rem;
-        border: 2px solid #cbd5e1;
+        {GRID_CELL_FRAME_CSS}
         display: inline-flex;
         align-items: center;
         justify-content: center;
         padding: 0 0.3rem;
         font-size: 0.78rem;
         font-weight: 800;
+        overflow: visible;
       }}
     </style>
     <div class="escape-legend">
@@ -1607,7 +1626,7 @@ def build_grid_legend_html(mode: str) -> str:
         legend_items.append(
             (
                 "<span class='escape-legend-item'>"
-                f"<span class='escape-legend-swatch' style=\"background:{background};border-color:{border};color:{text_color};\">"
+                f"<span class='escape-legend-swatch' style=\"background:{background};{_cell_frame_css_variable(border)};color:{text_color};\">"
                 f"{html.escape(symbol)}"
                 "</span>"
                 f"{html.escape(label)}"
@@ -1634,13 +1653,14 @@ def build_grid_legend_html(mode: str) -> str:
         min-width: 1.55rem;
         height: 1.3rem;
         border-radius: 0.3rem;
-        border: 2px solid #cbd5e1;
+        {GRID_CELL_FRAME_CSS}
         display: inline-flex;
         align-items: center;
         justify-content: center;
         padding: 0 0.22rem;
         font-size: 0.72rem;
         font-weight: 800;
+        overflow: visible;
       }}
     </style>
     <div class="escape-legend">
