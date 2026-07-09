@@ -1,5 +1,11 @@
-import streamlit as st
+"""Compatibility wrapper for Streamlit Cloud starter templates.
 
-st.title('🎈 App Name')
+The main project entry point is `app.py`. This file remains available so older
+links or starter-kit conventions can still launch the application.
+"""
 
-st.write('Hello world!')
+from app import main
+
+
+if __name__ == "__main__":
+    main()
