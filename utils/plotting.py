@@ -47,6 +47,28 @@ GRID_CELL_SIZE_REM = 4.0
 ITERATION_BROWSER_GRID_CELL_SIZE_REM = 3.15
 ITERATION_BROWSER_GRID_SPACING_REM = 0.16
 
+# Inset frame drawn inside the cell so rounded corners stay complete after deploy.
+GRID_CELL_FRAME_WIDTH_PX = 2
+GRID_CELL_HIGHLIGHT_FRAME_WIDTH_PX = 3
+GRID_CELL_DEFAULT_FRAME_COLOR = "#cbd5e1"
+GRID_CELL_FRAME_CSS = f"""
+  border: none;
+  outline: none;
+  box-shadow: inset 0 0 0 var(--cell-frame-width, {GRID_CELL_FRAME_WIDTH_PX}px) var(--cell-frame-color, {GRID_CELL_DEFAULT_FRAME_COLOR});
+  background-clip: padding-box;
+  box-sizing: border-box;
+"""
+
+
+def _cell_frame_css_variable(
+    border_color: str,
+    frame_width_px: int | None = None,
+) -> str:
+    """Return inline CSS variables for the inset cell frame."""
+
+    width = frame_width_px if frame_width_px is not None else GRID_CELL_FRAME_WIDTH_PX
+    return f"--cell-frame-color:{border_color};--cell-frame-width:{width}px;"
+
 
 def compute_iteration_browser_grid_height_rem(grid_rows: int) -> float:
     """Return the rendered grid height in rem, including the axis header row."""
@@ -690,7 +712,11 @@ def _cell_badge_text(cell_value: str, mode: str, base_cell_value: str) -> str:
         return "TRAP"
     if mode == "policy" and base_token == "I":
         return "SLIP"
-    if mode == "value" and base_token in {"S", "E", "G"}:
+    if mode == "value" and base_token in {"S", "E", "G", "T", "I"}:
+        if base_token == "T":
+            return "TRAP"
+        if base_token == "I":
+            return "SLIP"
         return "EXIT" if base_token in {"E", "G"} else base_token
     if mode == "replay" and "A" in _split_cell_tokens(cell_value):
         return "NOW"
@@ -702,17 +728,22 @@ def _value_to_color(
     base_cell_value: str,
     numeric_min: float,
     numeric_max: float,
-) -> tuple[str, str, str]:
-    """Choose a heatmap color for value-function cells."""
+) -> tuple[str, str, str, int]:
+    """Choose a heatmap color for value-function cells.
+
+    Returns ``(background, text_color, border_color, frame_width_px)``.
+    Special layout cells keep a thicker colored inset frame and a semantic tint.
+    """
 
     base_token = _base_layout_token(base_cell_value)
+    frame_width = GRID_CELL_FRAME_WIDTH_PX
     if cell_value == "W":
-        return "#334155", "#f8fafc", "#475569"
+        return "#334155", "#f8fafc", "#475569", GRID_CELL_HIGHLIGHT_FRAME_WIDTH_PX
 
     try:
         numeric_value = float(cell_value)
     except ValueError:
-        return "#f8fafc", "#0f172a", "#cbd5e1"
+        return "#f8fafc", "#0f172a", "#cbd5e1", frame_width
 
     span = max(numeric_max - numeric_min, 1e-9)
     normalized = (numeric_value - numeric_min) / span
@@ -724,17 +755,23 @@ def _value_to_color(
     border_color = "#cbd5e1"
     if base_token == "S":
         border_color = "#16a34a"
-        background = f"linear-gradient(135deg, #86efac 0%, {background} 38%, {background} 100%)"
+        background = f"linear-gradient(135deg, #86efac 0%, #dcfce7 35%, {background} 100%)"
+        frame_width = GRID_CELL_HIGHLIGHT_FRAME_WIDTH_PX
     elif base_token in {"E", "G"}:
         border_color = "#ca8a04"
-        background = f"linear-gradient(135deg, #fde68a 0%, {background} 38%, {background} 100%)"
+        background = f"linear-gradient(135deg, #fde68a 0%, #fef3c7 35%, {background} 100%)"
+        frame_width = GRID_CELL_HIGHLIGHT_FRAME_WIDTH_PX
     elif base_token == "T":
         border_color = "#dc2626"
+        background = f"linear-gradient(135deg, #fecaca 0%, #fee2e2 35%, {background} 100%)"
+        frame_width = GRID_CELL_HIGHLIGHT_FRAME_WIDTH_PX
     elif base_token == "I":
         border_color = "#2563eb"
+        background = f"linear-gradient(135deg, #93c5fd 0%, #dbeafe 35%, {background} 100%)"
+        frame_width = GRID_CELL_HIGHLIGHT_FRAME_WIDTH_PX
 
     text_color = "#0f172a" if normalized < 0.7 else "#ffffff"
-    return background, text_color, border_color
+    return background, text_color, border_color, frame_width
 
 
 def _categorical_cell_style(
@@ -855,8 +892,9 @@ def build_grid_html(
         row_cells = [f"<th class='grid-axis'>{row_idx}</th>"]
         for col_idx, cell_value in enumerate(row):
             base_cell_value = base_grid[row_idx][col_idx]
+            frame_width_px: int | None = None
             if mode == "value":
-                background, text_color, border_color = _value_to_color(
+                background, text_color, border_color, frame_width_px = _value_to_color(
                     str(cell_value),
                     str(base_cell_value),
                     numeric_min,
@@ -892,7 +930,8 @@ def build_grid_html(
             )
             style = (
                 "position:relative;"
-                f"background:{background};color:{text_color};border:3px solid {border_color};"
+                f"background:{background};color:{text_color};"
+                f"{_cell_frame_css_variable(border_color, frame_width_px)}"
                 f"font-size:{font_size};"
             )
             if policy_arrow:
@@ -930,20 +969,20 @@ def build_grid_html(
     is_compact_grid = resolved_cell_size_rem < GRID_CELL_SIZE_REM
     grid_spacing = "0.16rem" if is_compact_grid else "0.28rem"
     grid_margin = "0.25rem 0 0.35rem 0" if is_compact_grid else "0.5rem 0 1rem 0"
-    grid_overflow = "visible" if is_compact_grid else "auto"
     wrapper_class = "escape-grid-wrapper"
     if show_value_policy_overlay:
         wrapper_class += " escape-grid-value-policy"
     return f"""
     <style>
       .escape-grid-wrapper {{
-        overflow-x: {grid_overflow};
+        overflow: visible;
         margin: {grid_margin};
       }}
       .escape-grid-table {{
         border-collapse: separate;
         border-spacing: {grid_spacing};
         margin: 0;
+        table-layout: fixed;
       }}
       .escape-grid-table .grid-axis,
       .escape-grid-table .grid-corner {{
@@ -964,12 +1003,12 @@ def build_grid_html(
         vertical-align: middle;
         border-radius: 0.8rem;
         font-weight: 700;
-        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+        {GRID_CELL_FRAME_CSS}
         white-space: normal;
         line-height: 1.1;
         padding: 0.2rem;
-        box-sizing: border-box;
         overflow: visible;
+        isolation: isolate;
       }}
       .escape-grid-table .grid-cell-main {{
         display: inline-flex;
@@ -1148,7 +1187,20 @@ def _build_compass_cell_body(cell: dict[str, Any]) -> str:
             + "</div></div>"
         )
 
-    if cell.get("policy_arrow") or kind in {"start", "empty", "trap", "slippery"}:
+    if kind == "slippery":
+        policy_arrow = str(cell.get("policy_arrow", ""))
+        center_content = (
+            f"<span class='mdp-policy-arrow'>{html.escape(policy_arrow)}</span>"
+            if policy_arrow
+            else ""
+        )
+        return (
+            "<div class='compass'>"
+            f"<div class='compass-center compass-center-policy'>{center_content}</div>"
+            "</div>"
+        )
+
+    if cell.get("policy_arrow") or kind in {"start", "empty", "trap"}:
         return _build_actionable_cell_body(cell)
 
     return "<div class='compass'></div>"
@@ -1189,7 +1241,7 @@ def build_unified_room_grid_html(grid: list[list[dict[str, Any]]]) -> str:
                 (
                     "<td class='unified-cell' "
                     f"title=\"{title}\" "
-                    f"style=\"background:{background};color:{text_color};border-color:{border_color};\">"
+                    f"style=\"background:{background};color:{text_color};{_cell_frame_css_variable(border_color)}\">"
                     f"{body}"
                     "</td>"
                 )
@@ -1200,7 +1252,7 @@ def build_unified_room_grid_html(grid: list[list[dict[str, Any]]]) -> str:
     return f"""
     <style>
       .unified-grid-wrapper {{
-        overflow-x: auto;
+        overflow: visible;
         margin: 0.5rem 0 1rem 0;
       }}
       .unified-grid-table {{
@@ -1226,13 +1278,13 @@ def build_unified_room_grid_html(grid: list[list[dict[str, Any]]]) -> str:
         max-width: var(--cell-size);
         min-height: var(--cell-size);
         max-height: var(--cell-size);
-        border: 2px solid #cbd5e1;
         border-radius: 0.8rem;
         vertical-align: middle;
         text-align: center;
         padding: 0;
-        box-sizing: border-box;
+        {GRID_CELL_FRAME_CSS}
         overflow: visible;
+        isolation: isolate;
       }}
       .compass {{
         position: relative;
@@ -1395,6 +1447,9 @@ def build_unified_room_grid_html(grid: list[list[dict[str, Any]]]) -> str:
         z-index: 1;
         pointer-events: none;
       }}
+      .compass-center-policy {{
+        inset: 0;
+      }}
       .compass-marker {{
         font-size: 0.9rem;
         font-weight: 800;
@@ -1430,14 +1485,13 @@ def build_unified_legend_html() -> str:
         ("SL", "Slippery cell (blue border)", "#dbeafe", "#2563eb", "#1e3a8a"),
         ("r = N", "Reward on that cell", "#fff7ed", "#ea580c", "#9a3412"),
         ("→", "Policy action (center arrow)", "#eef2ff", "#6366f1", "#4338ca"),
-        ("0.50", "Transition probability (edge)", "#dbeafe", "#1d4ed8", "#1e3a8a"),
     ]
     legend_items: list[str] = []
     for symbol, label, background, border, text_color in items:
         legend_items.append(
             (
                 "<span class='escape-legend-item'>"
-                f"<span class='escape-legend-swatch' style=\"background:{background};border-color:{border};color:{text_color};\">"
+                f"<span class='escape-legend-swatch' style=\"background:{background};{_cell_frame_css_variable(border)};color:{text_color};\">"
                 f"{html.escape(symbol)}"
                 "</span>"
                 f"{html.escape(label)}"
@@ -1464,98 +1518,18 @@ def build_unified_legend_html() -> str:
         min-width: 2.2rem;
         height: 1.55rem;
         border-radius: 0.4rem;
-        border: 2px solid #cbd5e1;
+        {GRID_CELL_FRAME_CSS}
         display: inline-flex;
         align-items: center;
         justify-content: center;
         padding: 0 0.3rem;
         font-size: 0.78rem;
         font-weight: 800;
+        overflow: visible;
       }}
     </style>
     <div class="escape-legend">
       {''.join(legend_items)}
-    </div>
-    """
-
-
-def build_slippery_explanation_html(explanations: list[dict[str, Any]]) -> str:
-    """Render a written explanation panel for all slippery cells."""
-
-    if not explanations:
-        return "<p>No slippery cells are defined in this room.</p>"
-
-    cards: list[str] = []
-    for item in explanations:
-        row, col = item["state"]
-        outcomes = "".join(
-            (
-                "<span class='slip-pill'>"
-                f"{html.escape(outcome['arrow'])} "
-                f"{outcome['probability']:.2f}"
-                "</span>"
-            )
-            for outcome in item["outcomes"]
-        )
-        cards.append(
-            (
-                "<div class='slip-card'>"
-                f"<div class='slip-title'>Slippery cell ({row}, {col})</div>"
-                f"<div class='slip-policy'>Policy action: {html.escape(item['intended_arrow'])} "
-                f"({html.escape(item['intended_label'])})</div>"
-                f"<div class='slip-outcomes'>{outcomes}</div>"
-                f"<div class='slip-text'>{html.escape(item['explanation'])}</div>"
-                "</div>"
-            )
-        )
-
-    return f"""
-    <style>
-      .slip-panel {{
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-        gap: 0.85rem;
-        margin: 0.5rem 0 1rem 0;
-      }}
-      .slip-card {{
-        background: #eff6ff;
-        border: 1px solid #93c5fd;
-        border-radius: 0.9rem;
-        padding: 0.85rem 0.95rem;
-      }}
-      .slip-title {{
-        font-weight: 800;
-        color: #1e3a8a;
-        margin-bottom: 0.35rem;
-      }}
-      .slip-policy {{
-        font-weight: 700;
-        color: #1d4ed8;
-        margin-bottom: 0.5rem;
-      }}
-      .slip-outcomes {{
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.4rem;
-        margin-bottom: 0.55rem;
-      }}
-      .slip-pill {{
-        background: #dbeafe;
-        border: 1px solid #60a5fa;
-        border-radius: 999px;
-        padding: 0.15rem 0.55rem;
-        font-size: 0.9rem;
-        font-weight: 700;
-        color: #1e3a8a;
-      }}
-      .slip-text {{
-        color: #334155;
-        font-size: 0.95rem;
-        line-height: 1.45;
-      }}
-    </style>
-    <div class="slip-panel">
-      {''.join(cards)}
     </div>
     """
 
@@ -1578,7 +1552,7 @@ def build_grid_legend_html(mode: str) -> str:
             ("S", "Start", "#dcfce7", "#16a34a", "#0f172a"),
             ("E", "Exit Door", "#fef3c7", "#ca8a04", "#0f172a"),
             ("W", "Wall", "#334155", "#1e293b", "#f8fafc"),
-            ("T", "Trap (-50)", "#fee2e2", "#dc2626", "#991b1b"),
+            ("T", "Trap (-0.5)", "#fee2e2", "#dc2626", "#991b1b"),
             ("I", "Slippery cell", "#dbeafe", "#2563eb", "#1e3a8a"),
             ("↑→↓←", "Policy action", "#eef2ff", "#6366f1", "#4338ca"),
         ]
@@ -1587,7 +1561,7 @@ def build_grid_legend_html(mode: str) -> str:
             ("S", "Start", "#dcfce7", "#16a34a", "#0f172a"),
             ("E", "Exit Door", "#fef3c7", "#ca8a04", "#0f172a"),
             ("W", "Wall", "#334155", "#1e293b", "#f8fafc"),
-            ("T", "Trap (-50)", "#fee2e2", "#dc2626", "#0f172a"),
+            ("T", "Trap (-0.5)", "#fee2e2", "#dc2626", "#0f172a"),
             ("I", "Slippery (50/50)", "#dbeafe", "#2563eb", "#0f172a"),
             ("1+", "Visited replay step #", "#ede9fe", "#7c3aed", "#5b21b6"),
             ("A", "Current replay position", "#ffffff", "#f97316", "#f97316"),
@@ -1595,9 +1569,9 @@ def build_grid_legend_html(mode: str) -> str:
     else:
         items = [
             ("S", "Start (top-left)", "#dcfce7", "#16a34a", "#0f172a"),
-            ("E", "Exit Door (+500)", "#fef3c7", "#ca8a04", "#0f172a"),
+            ("E", "Exit Door (+10)", "#fef3c7", "#ca8a04", "#0f172a"),
             ("W", "Wall / Obstacle", "#334155", "#1e293b", "#f8fafc"),
-            ("T", "Trap (-50)", "#fee2e2", "#dc2626", "#0f172a"),
+            ("T", "Trap (-0.5)", "#fee2e2", "#dc2626", "#0f172a"),
             ("I", "Slippery (50% action / 50% other)", "#dbeafe", "#2563eb", "#0f172a"),
             ("A", "Agent position", "#ffffff", "#f97316", "#f97316"),
         ]
@@ -1607,7 +1581,7 @@ def build_grid_legend_html(mode: str) -> str:
         legend_items.append(
             (
                 "<span class='escape-legend-item'>"
-                f"<span class='escape-legend-swatch' style=\"background:{background};border-color:{border};color:{text_color};\">"
+                f"<span class='escape-legend-swatch' style=\"background:{background};{_cell_frame_css_variable(border)};color:{text_color};\">"
                 f"{html.escape(symbol)}"
                 "</span>"
                 f"{html.escape(label)}"
@@ -1634,13 +1608,14 @@ def build_grid_legend_html(mode: str) -> str:
         min-width: 1.55rem;
         height: 1.3rem;
         border-radius: 0.3rem;
-        border: 2px solid #cbd5e1;
+        {GRID_CELL_FRAME_CSS}
         display: inline-flex;
         align-items: center;
         justify-content: center;
         padding: 0 0.22rem;
         font-size: 0.72rem;
         font-weight: 800;
+        overflow: visible;
       }}
     </style>
     <div class="escape-legend">

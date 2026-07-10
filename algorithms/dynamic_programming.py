@@ -26,7 +26,7 @@ POLICY_EVALUATION_VALUE_PRECISION = 4
 class DynamicProgrammingConfig:
     """User-facing hyperparameters for Dynamic Programming (Policy Iteration)."""
 
-    gamma: float = 0.5
+    gamma: float = 0.99
     theta: float = 0.0001
     max_iterations: int = 100
     # Fixed seed so the random initial policy is identical on every run.
