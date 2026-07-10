@@ -26,8 +26,8 @@ class Room1Config(GridRoomConfig):
     max_steps: int = 200
     # Slippery cells: 50% keep chosen action, 50% random among the other three.
     slip_probability: float = 0.5
-    goal_reward: float = 500.0
-    trap_penalty: float = -50.0
+    goal_reward: float = 10.0
+    trap_penalty: float = -0.5
 
 
 class Room1DynamicProgrammingEnv(GridRoomBase):
@@ -36,14 +36,14 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
     room_title = "Room 1 - Dynamic Programming"
     room_summary = (
         "A fixed known-model 10x10 maze. Start is top-left, the Exit Door is "
-        "bottom-right (+500). Every path to the exit must cross at least one "
+        "bottom-right (+10). Every path to the exit must cross at least one "
         "slippery cell (the openings in the wall band). Change only the DP "
         "hyperparameters to study how Value Iteration and Policy Iteration learn."
     )
     state_space_description = "Discrete 10x10 grid locations (walls blocked)."
     action_space_description = "Move up, right, down, or left."
     reward_description = (
-        "Exit Door: +500. Trap: -50. Regular cells give 0. "
+        "Exit Door: +10. Trap: -0.5. Regular cells give 0. "
         "Only legal actions are selectable. A sealed wall band forces every "
         "path through at least one slippery opening (50% intended legal action, "
         "50% random among other legal actions)."
@@ -84,72 +84,28 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
         }
         self.traps = {(2, 2), (3, 5), (6, 5), (7, 9), (8, 6), (8, 9)}
         self.slippery_cells = {(4, 2), (4, 3), (4, 6), (4, 7)}
-        # Cells with a restricted action set (e.g. vertical corridor only).
-        self.restricted_legal_actions: dict[tuple[int, int], tuple[int, ...]] = {
-            (4, 6): (0, 2),
-        }
         self.random_generator = Random(7)
         self.agent_position = self.start_position
-        # Only the trigger actions defined here activate slip probabilities.
-        self.slippery_action_distributions = self._build_slippery_action_distributions()
 
     def _build_uniform_slip_distribution(
         self,
         legal_actions: list[int],
-        trigger_action: int,
+        chosen_action: int,
     ) -> dict[int, float]:
-        """Build 50% trigger / 50% uniform-over-other-legal-actions slip model."""
+        """Build slip model: P(chosen) plus uniform split over other legal actions."""
 
         other_actions = [
-            candidate for candidate in legal_actions if candidate != trigger_action
+            candidate for candidate in legal_actions if candidate != chosen_action
         ]
         if not other_actions:
-            return {trigger_action: 1.0}
+            return {chosen_action: 1.0}
 
-        distribution = {trigger_action: 0.5}
-        shared_probability = 0.5 / len(other_actions)
+        intended_probability = self.config.slip_probability
+        distribution = {chosen_action: intended_probability}
+        shared_probability = (1.0 - intended_probability) / len(other_actions)
         for other_action in other_actions:
             distribution[other_action] = shared_probability
         return distribution
-
-    def _build_slippery_action_distributions(
-        self,
-    ) -> dict[tuple[int, int], dict[int, dict[int, float]]]:
-        """Return per-cell slip distributions keyed by the trigger action only."""
-
-        explicit_distributions: dict[tuple[int, int], dict[int, dict[int, float]]] = {
-            (4, 2): {0: {0: 0.5, 2: 0.5}},  # Up: 50% up, 50% down
-            (4, 3): {2: {2: 0.5, 3: 0.5}},  # Down: 50% down, 50% left
-            (4, 6): {0: {0: 0.5, 2: 0.5}},  # Up: 50% up, 50% down
-        }
-        uniform_triggers = {
-            (4, 7): 3,  # Left
-        }
-
-        distributions = dict(explicit_distributions)
-        for state, trigger_action in uniform_triggers.items():
-            legal_actions = self.get_legal_actions(state)
-            if trigger_action not in legal_actions:
-                continue
-            distributions[state] = {
-                trigger_action: self._build_uniform_slip_distribution(
-                    legal_actions,
-                    trigger_action,
-                )
-            }
-        return distributions
-
-    def get_legal_actions(self, state: tuple[int, int]) -> list[int]:
-        """Return legal actions for a state, including special corridor rules."""
-
-        restricted_actions = self.restricted_legal_actions.get(state)
-        if restricted_actions is not None:
-            return [
-                action
-                for action in restricted_actions
-                if self.is_legal_action(state, action)
-            ]
-        return super().get_legal_actions(state)
 
     def _resolve_to_legal_action(self, state: tuple[int, int], action: int) -> int:
         """Map a requested action onto a legal action from this state."""
@@ -164,9 +120,9 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
     def _get_action_probabilities(self, state: tuple[int, int], action: int) -> dict[int, float]:
         """Return the execution distribution for one evaluated action.
 
-        Slip probabilities apply only when ``action`` is a configured trigger for
-        that slippery cell. Every other action, including other legal moves from
-        the same cell, executes deterministically with probability 1.
+        On slippery cells every legal action slips: the chosen action succeeds with
+        ``slip_probability`` and otherwise one of the other legal actions is chosen
+        uniformly. Regular cells execute the chosen action deterministically.
         """
 
         legal_actions = self.get_legal_actions(state)
@@ -174,9 +130,8 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
             raise ValueError(f"No legal actions are available from state {state}.")
 
         chosen_action = self._resolve_to_legal_action(state, action)
-        state_distributions = self.slippery_action_distributions.get(state, {})
-        if chosen_action in state_distributions:
-            return dict(state_distributions[chosen_action])
+        if state in self.slippery_cells:
+            return self._build_uniform_slip_distribution(legal_actions, chosen_action)
         return {chosen_action: 1.0}
 
     def _get_reward_for_state(self, state: tuple[int, int]) -> float:
@@ -268,12 +223,9 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
         name_by_action = {0: "Up", 1: "Right", 2: "Down", 3: "Left"}
 
         legal_action = self._resolve_to_legal_action(state, intended_action)
-        state_distributions = self.slippery_action_distributions.get(state, {})
-        uses_slip_distribution = legal_action in state_distributions
-        if uses_slip_distribution:
-            probabilities = state_distributions[legal_action]
-        else:
-            probabilities = {legal_action: 1.0}
+        legal_actions = self.get_legal_actions(state)
+        uses_slip_distribution = len(legal_actions) > 1
+        probabilities = self._get_action_probabilities(state, legal_action)
         ordered = sorted(probabilities.items(), key=lambda item: (-item[1], item[0]))
         outcomes = [
             {
@@ -297,21 +249,17 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
         ]
         if other_parts:
             slip_sentence = (
-                f"If the policy chooses {intended_arrow} ({intended_label}) here, "
-                f"the agent moves {intended_arrow} with probability 0.50, and otherwise slips to "
+                f"On this slippery cell, choosing {intended_arrow} ({intended_label}) "
+                f"moves {intended_arrow} with probability "
+                f"{self.config.slip_probability:.2f}, and otherwise slips to "
                 + ", ".join(other_parts)
                 + ". Only legal directions are sampled."
-            )
-        elif uses_slip_distribution:
-            slip_sentence = (
-                f"If the policy chooses {intended_arrow} ({intended_label}) here, "
-                f"that is the only legal action, so the agent always moves {intended_arrow}."
             )
         else:
             slip_sentence = (
                 f"If the policy chooses {intended_arrow} ({intended_label}) here, "
-                f"the move is deterministic because only trigger actions activate slip "
-                f"probabilities in this cell."
+                f"that is the only legal action, so the agent always moves "
+                f"{intended_arrow}."
             )
 
         compact_label = " ".join(f"{item['probability']:.2f}" for item in outcomes)
@@ -357,23 +305,19 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
         self,
         policy: dict[tuple[int, int], int],
     ) -> list[list[dict[str, Any]]]:
-        """Build one display grid with layout markers, policy, rewards, and slip odds.
+        """Build one display grid with layout markers, policy arrows, and rewards.
 
-        Direction probabilities are shown only for slippery cells. Regular cells
-        keep only the policy arrow. Special rewards use the label format ``r = N``.
+        Slippery cells use the same centered policy arrow as regular actionable
+        cells. Special rewards use the label format ``r = N``.
         """
 
         arrow_by_label = {"U": "↑", "R": "→", "D": "↓", "L": "←"}
-        slot_by_arrow = {"↑": "up", "→": "right", "↓": "down", "←": "left"}
 
         def format_reward_label(value: float) -> str:
             if float(value).is_integer():
                 return f"r = {int(value)}"
             return f"r = {value:g}"
 
-        slippery_info = {
-            tuple(item["state"]): item for item in self.explain_slippery_cells(policy)
-        }
         grid: list[list[dict[str, Any]]] = []
         for row in range(self.config.grid_height):
             row_cells: list[dict[str, Any]] = []
@@ -410,13 +354,6 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
                     "policy_arrow": "",
                     "policy_label": "",
                     "reward_label": reward_label,
-                    "show_probabilities": False,
-                    "directions": {
-                        "up": 0.0,
-                        "right": 0.0,
-                        "down": 0.0,
-                        "left": 0.0,
-                    },
                     "title": marker or kind,
                 }
 
@@ -430,27 +367,6 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
                         arrow = arrow_by_label[label]
                         cell["policy_arrow"] = arrow
                         cell["policy_label"] = label
-
-                if state in slippery_info:
-                    explanation = slippery_info[state]
-                    cell["kind"] = "slippery"
-                    cell["marker"] = ""
-                    cell["show_probabilities"] = bool(
-                        explanation.get("uses_slip_distribution")
-                    )
-                    cell["policy_arrow"] = explanation["intended_arrow"]
-                    cell["policy_label"] = explanation["intended_label"]
-                    cell["title"] = explanation["explanation"]
-                    cell["directions"] = {
-                        "up": 0.0,
-                        "right": 0.0,
-                        "down": 0.0,
-                        "left": 0.0,
-                    }
-                    if explanation.get("uses_slip_distribution"):
-                        for outcome in explanation["outcomes"]:
-                            slot = slot_by_arrow[outcome["arrow"]]
-                            cell["directions"][slot] = float(outcome["probability"])
 
                 row_cells.append(cell)
             grid.append(row_cells)
@@ -480,16 +396,13 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
             ),
             "regular_cells": "The intended legal action is executed with probability 1.0.",
             "slippery_cells": {
-                "intended_action_probability": 0.5,
+                "intended_action_probability": self.config.slip_probability,
                 "description": (
-                    "Only explicitly configured trigger actions activate slip "
-                    "probabilities. Other legal actions from the same cell are "
-                    "deterministic when their Q-value is evaluated. Example: if "
-                    "Right is configured as 50% Right / 50% Left, then Q(Right) "
-                    "uses those probabilities while Q(Left) is computed normally. "
-                    "Cell (4, 2): Up slips 50% up / 50% down. "
-                    "Cell (4, 3): Down slips 50% down / 50% left. "
-                    "Cell (4, 6): Up slips 50% up / 50% down."
+                    "From every slippery cell, any chosen legal action succeeds with "
+                    f"probability {self.config.slip_probability:.0%} and otherwise the "
+                    "agent uniformly picks one of the other legal actions from that "
+                    "cell. Slip applies on every action while standing on a slippery "
+                    "cell."
                 ),
             },
             "terminal_state": "The Exit Door is the only terminal state.",

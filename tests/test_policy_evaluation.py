@@ -75,8 +75,8 @@ def test_first_sweep_goal_propagation_example() -> None:
 
     values, _ = agent._run_policy_evaluation_sweep(environment, policy, values)
 
-    assert values[(8, 9)] == 500.0
-    assert values[(7, 9)] == 0.0
+    assert values[(9, 8)] == 10.0
+    assert values[(9, 7)] == 0.0
 
 
 def test_second_sweep_uses_previous_successor_value() -> None:
@@ -89,7 +89,7 @@ def test_second_sweep_uses_previous_successor_value() -> None:
     values, _ = agent._run_policy_evaluation_sweep(environment, policy, values)
     values, _ = agent._run_policy_evaluation_sweep(environment, policy, values)
 
-    assert values[(7, 9)] == 250.0
+    assert values[(9, 7)] == -0.25
 
 
 def test_policy_evaluation_resets_to_zero_each_phase() -> None:

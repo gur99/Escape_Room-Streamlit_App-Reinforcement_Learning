@@ -32,7 +32,6 @@ from utils.plotting import (
     build_metrics_dataframe,
     build_round_metrics_dataframe,
     compute_iteration_browser_grid_height_rem,
-    build_slippery_explanation_html,
     build_unified_legend_html,
     build_unified_room_grid_html,
     build_value_evolution_table_html,
@@ -109,9 +108,9 @@ def _render_dataclass_controls(
         current_value = getattr(config_object, field.name)
         label = labels.get(field.name, field.name.replace("_", " ").title())
         widget_key = f"{key_prefix}:{field.name}"
-        # New default gamma=0.5: version the widget key so old session values do not stick.
+        # New default gamma=0.99: version the widget key so old session values do not stick.
         if field.name == "gamma":
-            widget_key = f"{key_prefix}:{field.name}:default_0_5"
+            widget_key = f"{key_prefix}:{field.name}:default_0_99"
 
         if isinstance(current_value, bool):
             values[field.name] = st.checkbox(label, value=current_value, key=widget_key)
@@ -229,7 +228,7 @@ def _render_room_overview(environment: Any, algorithm: Any) -> None:
         st.write(f"**Learning Type:** {algorithm.learning_type}")
         st.write(f"**Summary:** {algorithm.algorithm_summary}")
 
-    # Room 1 uses one large unified grid (markers + policy + slip odds) below.
+    # Room 1 uses one large unified grid (markers + policy arrows) below.
     if hasattr(environment, "build_unified_display_grid"):
         return
 
@@ -254,17 +253,14 @@ def _render_unified_room_grid(
     title: str,
     caption: str,
 ) -> None:
-    """Show one large grid with markers, policy arrows, and slip probabilities."""
+    """Show one large grid with markers and centered policy arrows."""
 
     unified_grid = environment.build_unified_display_grid(policy)
-    explanations = environment.explain_slippery_cells(policy)
 
     st.markdown(f"#### {title}")
     st.caption(caption)
     st.markdown(build_unified_legend_html(), unsafe_allow_html=True)
     st.markdown(build_unified_room_grid_html(unified_grid), unsafe_allow_html=True)
-    with st.expander("Written explanation of slippery cells", expanded=False):
-        st.markdown(build_slippery_explanation_html(explanations), unsafe_allow_html=True)
 
 
 def _render_placeholder_metrics_tab() -> None:
@@ -301,7 +297,7 @@ def _render_placeholder_replay_tab() -> None:
 
 
 def _render_room1_initial_policy(environment: Any, algorithm: Any) -> None:
-    """Show one unified grid with layout, random initial policy, and slip probabilities."""
+    """Show one unified grid with layout and a random initial policy."""
 
     policy_key = "room1_display_initial_policy"
     if policy_key not in st.session_state:
@@ -313,17 +309,15 @@ def _render_room1_initial_policy(environment: Any, algorithm: Any) -> None:
         initial_policy,
         title="Room Grid (Random Initial Policy)",
         caption=(
-            "Slippery cells (blue border): one large policy arrow in the center; "
-            "transition probabilities appear as numbers at the top, bottom, left, "
-            "and right edges. Regular cells show only the policy arrow. "
-            "Rewards appear as r = N (Exit / traps). "
+            "Slippery cells (blue border) show the same centered policy arrow as "
+            "regular cells. Rewards appear as r = N (Exit / traps). "
             "The initial policy is sampled from legal actions in each cell using a fixed seed "
             "(same policy on every run)."
         ),
     )
 
 
-def _render_room1_training_result(environment: Any, training_result: dict[str, Any]) -> None:
+def _render_room1_training_result(training_result: dict[str, Any]) -> None:
     """Render Room 1 outputs after Dynamic Programming training."""
 
     summary = training_result["summary"]
@@ -350,23 +344,19 @@ def _render_room1_training_result(environment: Any, training_result: dict[str, A
     st.write(reward_model["trap_behavior"])
     st.write(reward_model["exit_door"])
 
-    _render_unified_room_grid(
-        environment,
-        training_result["policy"],
-        title="Room Grid (Final Policy)",
-        caption=(
-            "Same grid after training: rewards as r = N, center policy arrow on every "
-            "actionable cell, and edge transition probabilities on slippery cells only."
-        ),
+    st.markdown("#### Final Result: V(s) and Policy")
+    st.caption(
+        "Each cell shows the converged state value V(s) with the final policy arrow "
+        "underneath. Start (green), Exit (gold), trap (red), and slippery (blue) cells "
+        "use a thicker colored frame matching their cell type."
     )
-
-    st.markdown("#### Final Value Function")
     st.markdown(build_grid_legend_html("value"), unsafe_allow_html=True)
     st.markdown(
         build_grid_html(
             training_result["value_grid"],
             mode="value",
             base_grid=training_result["layout_grid"],
+            overlay_policy_grid=training_result["policy_grid"],
         ),
         unsafe_allow_html=True,
     )
@@ -642,7 +632,7 @@ def _render_room1_iteration_browser(
         st.caption(
             "S0 initializes every V(s) to 0. Each S_k uses only the previous table "
             "and the fixed policy: R + gamma * V_old(successor). "
-            "Example: S1 gives (8,9)=500.0 and (7,9)=0 because V_old(8,9)=0. "
+            "Example: S1 gives (9,8)=10.0 and (9,7)=0 because V_old(9,8)=0. "
             "Per-state Δ is |last step − previous step|; sweeps stop when all Δ are 0."
         )
         st.markdown(
@@ -980,7 +970,7 @@ def main() -> None:
                     "Press 'Start Training' to run Value Iteration or Policy Iteration for Room 1."
                 )
             else:
-                _render_room1_training_result(environment, room1_result)
+                _render_room1_training_result(room1_result)
 
     with metrics_tab:
         if selected_room_label == ROOM1_LABEL:
