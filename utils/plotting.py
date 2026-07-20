@@ -10,6 +10,24 @@ import pandas as pd
 from utils.metrics import TrainingHistory
 
 
+def build_visit_counts_display_grid(
+    layout_grid: list[list[str]],
+    visit_counts: dict[tuple[int, int], int],
+) -> list[list[str]]:
+    """Build a numeric visit-count grid; walls remain ``W``."""
+
+    display: list[list[str]] = []
+    for row_idx, row in enumerate(layout_grid):
+        display_row: list[str] = []
+        for col_idx, cell in enumerate(row):
+            if _base_layout_token(cell) == "W":
+                display_row.append("W")
+            else:
+                display_row.append(str(int(visit_counts.get((row_idx, col_idx), 0))))
+        display.append(display_row)
+    return display
+
+
 def build_metrics_dataframe(history: TrainingHistory) -> pd.DataFrame:
     """Convert collected metrics into a tabular format for plotting.
 
@@ -915,7 +933,7 @@ def build_grid_html(
             if show_value_policy_overlay:
                 policy_token = overlay_policy_grid[row_idx][col_idx]
                 arrow_symbol = _policy_arrow_symbol(policy_token)
-                if arrow_symbol in {"↑", "→", "↓", "←"}:
+                if arrow_symbol and all(character in "↑→↓←" for character in arrow_symbol):
                     policy_arrow = (
                         "<span class='grid-cell-policy-arrow'>"
                         f"{html.escape(arrow_symbol)}"

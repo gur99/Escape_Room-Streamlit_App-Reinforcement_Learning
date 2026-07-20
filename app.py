@@ -1,7 +1,7 @@
 """Streamlit entry point for the RL Escape Room project.
 
-Room 1 (Dynamic Programming) is a fixed educational maze: users change only
-algorithm hyperparameters. Other rooms remain structured placeholders.
+Room 1 (Dynamic Programming) and Room 2 (SARSA) use fixed educational mazes:
+users change only algorithm hyperparameters. Later rooms remain placeholders.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from utils.plotting import (
     build_max_values_table_html,
     build_metrics_dataframe,
     build_round_metrics_dataframe,
+    build_visit_counts_display_grid,
     compute_iteration_browser_grid_height_rem,
     build_unified_legend_html,
     build_unified_room_grid_html,
@@ -39,9 +40,15 @@ from utils.plotting import (
     render_placeholder_metric,
     render_training_progress_chart,
 )
-from utils.replay import EpisodeReplay, build_placeholder_replay
+from utils.replay import (
+    EpisodeReplay,
+    build_placeholder_replay,
+    select_evenly_spaced_indices,
+    select_most_recent_indices,
+)
 
 ROOM1_REPLAY_ANIMATION_DELAY_SECONDS = 1.0
+ROOM2_REPLAY_ANIMATION_DELAY_SECONDS = 1.0
 
 
 ROOM_REGISTRY: dict[str, dict[str, Any]] = {
@@ -55,7 +62,7 @@ ROOM_REGISTRY: dict[str, dict[str, Any]] = {
         "environment_class": Room2SarsaEnv,
         "algorithm_class": SarsaAgent,
         "optional": False,
-        "fixed_environment": False,
+        "fixed_environment": True,
     },
     "Room 3 - Q-Learning": {
         "environment_class": Room3QLearningEnv,
@@ -78,6 +85,7 @@ ROOM_REGISTRY: dict[str, dict[str, Any]] = {
 }
 
 ROOM1_LABEL = "Room 1 - Dynamic Programming"
+ROOM2_LABEL = "Room 2 - SARSA"
 
 
 def _render_dataclass_controls(
@@ -108,9 +116,10 @@ def _render_dataclass_controls(
         current_value = getattr(config_object, field.name)
         label = labels.get(field.name, field.name.replace("_", " ").title())
         widget_key = f"{key_prefix}:{field.name}"
-        # New default gamma=0.99: version the widget key so old session values do not stick.
+        # Version gamma keys by default so old session values do not stick across rooms.
         if field.name == "gamma":
-            widget_key = f"{key_prefix}:{field.name}:default_0_99"
+            gamma_token = str(current_value).replace(".", "_")
+            widget_key = f"{key_prefix}:{field.name}:default_{gamma_token}"
 
         if isinstance(current_value, bool):
             values[field.name] = st.checkbox(label, value=current_value, key=widget_key)
@@ -294,6 +303,386 @@ def _render_placeholder_replay_tab() -> None:
         "will be added after the first room and training loop are implemented."
     )
     st.json(replay.to_dict())
+
+
+def _render_room2_overview_grid(environment: Any) -> None:
+    """Show the fixed Room 2 maze without requiring a trained policy."""
+
+    _render_unified_room_grid(
+        environment,
+        {},
+        title="Room Grid (Fixed Maze)",
+        caption=(
+            "Start (green, top-left), Exit Door (gold, center), traps (red), "
+            "walls (slate), and slippery cells (blue border). Environment values "
+            "match Room 1; only the maze layout differs. Change SARSA "
+            "hyperparameters in the sidebar, then start training."
+        ),
+    )
+
+
+def _render_room2_training_summary(training_result: dict[str, Any]) -> None:
+    """Show summary metrics cards for the latest Room 2 training run."""
+
+    summary = training_result.get("metrics_summary", {})
+    metric_columns = st.columns(5)
+    metric_columns[0].metric(
+        "Average Reward",
+        f"{float(summary.get('average_reward', 0.0)):.3f}",
+    )
+    metric_columns[1].metric(
+        "Peak Reward",
+        f"{float(summary.get('peak_reward', 0.0)):.3f}",
+    )
+    metric_columns[2].metric("Episodes", int(summary.get("episodes", 0)))
+    metric_columns[3].metric(
+        "Average Off-Policy Steps",
+        f"{float(summary.get('average_off_policy_steps', 0.0)):.2f}",
+    )
+    metric_columns[4].metric(
+        "Training Time",
+        f"{float(summary.get('training_time_s', 0.0)):.2f}s",
+    )
+
+    episodes = training_result.get("episodes", [])
+    goal_count = sum(1 for episode in episodes if episode.termination_reason == "goal")
+    st.caption(
+        f"Reached exit in {goal_count} / {len(episodes)} episodes. "
+        "Open Metrics for grids and charts, and Replay / Iterations for episode playback."
+    )
+
+
+def _build_sarsa_replay_step_description(
+    episode: Any,
+    frame_index: int,
+) -> str:
+    """Describe the current SARSA replay frame, including exploration flags."""
+
+    if frame_index == 0:
+        return (
+            f"Initial state before episode {episode.display_episode_number} starts. "
+            f"Step 0 / {episode.steps}."
+        )
+
+    step_index = frame_index - 1
+    action_label = {0: "U", 1: "R", 2: "D", 3: "L"}.get(
+        episode.actions[step_index],
+        str(episode.actions[step_index]),
+    )
+    exploration_label = (
+        "Exploration" if episode.was_exploration[step_index] else "Exploitation"
+    )
+    off_policy_label = "Yes" if episode.was_off_policy[step_index] else "No"
+    return (
+        f"Step {frame_index} / {episode.steps}: "
+        f"{tuple(episode.states[step_index])} --{action_label}--> "
+        f"{tuple(episode.next_states[step_index])}, "
+        f"reward {episode.rewards[step_index]:.3f}, "
+        f"ε={episode.epsilon_per_step[step_index]:.4f}, "
+        f"{exploration_label}, Off-Policy Step: {off_policy_label}"
+    )
+
+
+def _render_room2_episode_replay(training_result: dict[str, Any]) -> None:
+    """Episode Replay with selection, summary card, and visual step playback."""
+
+    episodes = training_result.get("episodes", [])
+    if not episodes:
+        st.info("No episodes were recorded. Run training again.")
+        return
+
+    layout_grid = training_result.get("layout_grid")
+    if layout_grid is None:
+        st.warning("Layout grid is missing from the training result. Re-run training.")
+        return
+
+    st.markdown("### Episode Replay")
+    st.caption(
+        "Browse the most recent episodes or an evenly spaced sample across the full "
+        "training run. Episode numbers in the UI are 1-based. Changing the display "
+        "mode uses the last saved training result and does not re-run training."
+    )
+
+    mode = st.radio(
+        "Replay mode",
+        options=["Most Recent Episodes", "Evenly Spaced Sample"],
+        horizontal=True,
+        key="room2:replay_mode",
+    )
+
+    total_episodes = len(episodes)
+    if mode == "Most Recent Episodes":
+        recent_count = int(
+            st.number_input(
+                "Number of most recent episodes",
+                min_value=1,
+                max_value=max(total_episodes, 1),
+                value=min(20, total_episodes),
+                step=1,
+                key="room2:replay_recent_count",
+            )
+        )
+        selected_indices = select_most_recent_indices(total_episodes, recent_count)
+    else:
+        sample_count = int(
+            st.number_input(
+                "Number of episodes in sample",
+                min_value=1,
+                max_value=max(total_episodes, 1),
+                value=min(10, total_episodes),
+                step=1,
+                key="room2:replay_sample_count",
+            )
+        )
+        selected_indices = select_evenly_spaced_indices(total_episodes, sample_count)
+
+    label_to_index = {
+        f"Episode {episodes[index].display_episode_number}": index
+        for index in selected_indices
+    }
+    selected_label = st.selectbox(
+        "Select episode",
+        options=list(label_to_index.keys()),
+        key="room2:replay_episode_select",
+    )
+    episode = episodes[label_to_index[selected_label]]
+
+    st.markdown("#### Episode Summary")
+    summary_columns = st.columns(4)
+    summary_columns[0].metric("Replay Episode", episode.display_episode_number)
+    summary_columns[1].metric("Steps", episode.steps)
+    summary_columns[2].metric("Off-Policy Steps", episode.off_policy_steps)
+    summary_columns[3].metric("Return (Discounted)", f"{episode.discounted_return:.3f}")
+
+    if episode.steps == 0:
+        st.info("This episode has no steps to replay.")
+        return
+
+    replay = episode.to_episode_replay()
+    replay_frames = _build_replay_frames(layout_grid, replay)
+    frame_state_key = "room2:replay_frame_index"
+    playing_state_key = "room2:replay_playing"
+    episode_state_key = "room2:replay_active_episode"
+
+    if st.session_state.get(episode_state_key) != episode.episode_index:
+        st.session_state[episode_state_key] = episode.episode_index
+        st.session_state[frame_state_key] = 0
+        st.session_state[playing_state_key] = False
+
+    if frame_state_key not in st.session_state:
+        st.session_state[frame_state_key] = 0
+    if playing_state_key not in st.session_state:
+        st.session_state[playing_state_key] = False
+
+    max_frame = len(replay_frames) - 1
+    current_frame = int(st.session_state[frame_state_key])
+    current_frame = max(0, min(current_frame, max_frame))
+    st.session_state[frame_state_key] = current_frame
+
+    st.markdown("#### Visual Replay")
+    st.caption(
+        "Agent position (NOW), visited path numbers, and layout markers use the same "
+        "style as Room 1. Animation delay matches Room 1 "
+        f"({ROOM2_REPLAY_ANIMATION_DELAY_SECONDS:g}s per step)."
+    )
+    st.markdown(build_grid_legend_html("replay"), unsafe_allow_html=True)
+
+    control_columns = st.columns(5)
+    if control_columns[0].button("Reset", key="room2:replay_reset"):
+        st.session_state[frame_state_key] = 0
+        st.session_state[playing_state_key] = False
+        st.rerun()
+    if control_columns[1].button("Previous", key="room2:replay_prev"):
+        st.session_state[frame_state_key] = max(0, current_frame - 1)
+        st.session_state[playing_state_key] = False
+        st.rerun()
+    play_label = "Pause" if st.session_state[playing_state_key] else "Play"
+    if control_columns[2].button(play_label, key="room2:replay_play_pause"):
+        st.session_state[playing_state_key] = not st.session_state[playing_state_key]
+        st.rerun()
+    if control_columns[3].button("Next", key="room2:replay_next"):
+        st.session_state[frame_state_key] = min(max_frame, current_frame + 1)
+        st.session_state[playing_state_key] = False
+        st.rerun()
+    control_columns[4].metric("Step", f"{current_frame} / {episode.steps}")
+
+    st.markdown(
+        build_grid_html(
+            replay_frames[current_frame],
+            mode="replay",
+            base_grid=layout_grid,
+        ),
+        unsafe_allow_html=True,
+    )
+    st.caption(_build_sarsa_replay_step_description(episode, current_frame))
+
+    if current_frame > 0:
+        step_index = current_frame - 1
+        action_label = {0: "U", 1: "R", 2: "D", 3: "L"}.get(
+            episode.actions[step_index],
+            str(episode.actions[step_index]),
+        )
+        detail_columns = st.columns(4)
+        detail_columns[0].write(f"**Previous state:** `{tuple(episode.states[step_index])}`")
+        detail_columns[1].write(f"**Action:** `{action_label}`")
+        detail_columns[2].write(
+            f"**Next state:** `{tuple(episode.next_states[step_index])}`"
+        )
+        detail_columns[3].write(f"**Reward:** `{episode.rewards[step_index]:.3f}`")
+        detail_columns = st.columns(3)
+        detail_columns[0].write(f"**Epsilon:** `{episode.epsilon_per_step[step_index]:.4f}`")
+        detail_columns[1].write(
+            "**Selection:** "
+            + ("Exploration" if episode.was_exploration[step_index] else "Exploitation")
+        )
+        detail_columns[2].write(
+            "**Off-Policy Step:** "
+            + ("Yes" if episode.was_off_policy[step_index] else "No")
+        )
+
+    if st.session_state[playing_state_key]:
+        if current_frame < max_frame:
+            time.sleep(ROOM2_REPLAY_ANIMATION_DELAY_SECONDS)
+            st.session_state[frame_state_key] = current_frame + 1
+            st.rerun()
+        else:
+            st.session_state[playing_state_key] = False
+
+
+def _render_room2_metrics_tab(training_result: dict[str, Any]) -> None:
+    """Render summary metrics, visit/value grids, and SARSA training charts."""
+
+    episodes = training_result.get("episodes", [])
+    if not episodes:
+        st.info("Training metrics will appear here after Room 2 finishes SARSA.")
+        return
+
+    _render_room2_training_summary(training_result)
+
+    layout_grid = training_result["layout_grid"]
+    visit_counts = training_result.get("visit_counts", {})
+    visit_grid = build_visit_counts_display_grid(layout_grid, visit_counts)
+
+    st.markdown("#### Visit Counts Grid")
+    st.caption(
+        "Total visits across all training episodes. Walls have no visit counter. "
+        "Darker cells indicate more visits; special cells keep their colored frames."
+    )
+    st.markdown(build_grid_legend_html("value"), unsafe_allow_html=True)
+    st.markdown(
+        build_grid_html(visit_grid, mode="value", base_grid=layout_grid),
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("#### Policy and State Value Grid")
+    st.caption(
+        "Each legal cell shows V(s) = max_a Q(s,a) with greedy action arrow(s). "
+        "Tied optimal actions may show multiple arrows. No policy is shown for walls "
+        "or the terminal exit cell."
+    )
+    st.markdown(build_grid_legend_html("value"), unsafe_allow_html=True)
+    st.markdown(
+        build_grid_html(
+            training_result["value_grid"],
+            mode="value",
+            base_grid=layout_grid,
+            overlay_policy_grid=training_result["policy_grid"],
+        ),
+        unsafe_allow_html=True,
+    )
+
+    episode_numbers = [episode.display_episode_number for episode in episodes]
+    x_tick = max(1, len(episodes) // 10)
+
+    st.markdown("### SARSA - Training Progress")
+    progress_columns = st.columns(3)
+    with progress_columns[0]:
+        reward_frame = pd.DataFrame(
+            {
+                "Episode": episode_numbers,
+                "Total Reward": [episode.total_reward for episode in episodes],
+            }
+        ).set_index("Episode")
+        render_training_progress_chart(
+            reward_frame,
+            y_label="Total Reward",
+            title="Reward per Episode",
+            x_tick_interval=x_tick,
+            y_tickformat=".3f",
+        )
+    with progress_columns[1]:
+        length_frame = pd.DataFrame(
+            {
+                "Episode": episode_numbers,
+                "Steps": [episode.steps for episode in episodes],
+            }
+        ).set_index("Episode")
+        render_training_progress_chart(
+            length_frame,
+            y_label="Steps",
+            title="Episode Length",
+            x_tick_interval=x_tick,
+            y_tickformat=".0f",
+        )
+    with progress_columns[2]:
+        off_policy_frame = pd.DataFrame(
+            {
+                "Episode": episode_numbers,
+                "Off-Policy Steps": [episode.off_policy_steps for episode in episodes],
+            }
+        ).set_index("Episode")
+        render_training_progress_chart(
+            off_policy_frame,
+            y_label="Off-Policy Steps",
+            title="Off-Policy Steps",
+            x_tick_interval=x_tick,
+            y_tickformat=".0f",
+        )
+
+    st.markdown("### SARSA - Training Time Analysis")
+    time_columns = st.columns(3)
+    with time_columns[0]:
+        time_frame = pd.DataFrame(
+            {
+                "Episode": episode_numbers,
+                "Time (ms)": [episode.time_ms for episode in episodes],
+            }
+        ).set_index("Episode")
+        render_training_progress_chart(
+            time_frame,
+            y_label="Time (ms)",
+            title="Time per Episode",
+            x_tick_interval=x_tick,
+            y_tickformat=".2f",
+        )
+    with time_columns[1]:
+        cumulative_frame = pd.DataFrame(
+            {
+                "Episode": episode_numbers,
+                "Time (s)": [episode.cumulative_time_s for episode in episodes],
+            }
+        ).set_index("Episode")
+        render_training_progress_chart(
+            cumulative_frame,
+            y_label="Time (s)",
+            title="Cumulative Training Time",
+            x_tick_interval=x_tick,
+            y_tickformat=".3f",
+        )
+    with time_columns[2]:
+        epsilon_frame = pd.DataFrame(
+            {
+                "Episode": episode_numbers,
+                "Epsilon": [episode.epsilon_start for episode in episodes],
+            }
+        ).set_index("Episode")
+        render_training_progress_chart(
+            epsilon_frame,
+            y_label="Epsilon",
+            title="Exploration Rate Decay",
+            x_tick_interval=x_tick,
+            y_tickformat=".4f",
+        )
 
 
 def _render_room1_initial_policy(environment: Any, algorithm: Any) -> None:
@@ -856,7 +1245,7 @@ def main() -> None:
     st.set_page_config(page_title="RL Escape Room", layout="wide")
     st.title("Reinforcement Learning Escape Room")
     st.caption(
-        "Room 1 is a fixed GridWorld for studying Dynamic Programming. "
+        "Rooms 1 and 2 use fixed GridWorld mazes. "
         "Only algorithm hyperparameters are editable."
     )
 
@@ -905,6 +1294,32 @@ def main() -> None:
                 "The agent always runs Policy Iteration (Evaluation + Improvement) "
                 "from a random legal initial policy."
             )
+        elif selected_room_label == ROOM2_LABEL:
+            algorithm_values = _render_dataclass_controls(
+                "Algorithm Hyperparameters",
+                preview_algorithm.config,
+                key_prefix=f"{selected_room_label}:algorithm",
+                include_fields={
+                    "gamma",
+                    "alpha",
+                    "episodes",
+                    "epsilon",
+                    "epsilon_decay",
+                    "max_steps",
+                },
+                field_labels={
+                    "gamma": "Discount Factor (γ)",
+                    "alpha": "Learning Rate (α)",
+                    "episodes": "Episodes",
+                    "epsilon": "Exploration Rate (ε)",
+                    "epsilon_decay": "Epsilon Decay - Multiplicative",
+                    "max_steps": "Maximum Steps per Episode",
+                },
+            )
+            st.sidebar.caption(
+                "Tabular SARSA with epsilon-greedy exploration. "
+                "Epsilon decays multiplicatively after each episode."
+            )
         else:
             algorithm_values = _render_dataclass_controls(
                 "Algorithm Hyperparameters",
@@ -944,14 +1359,29 @@ def main() -> None:
                 "Room 1 training finished. Inspect the value function, policy, "
                 "graphs, and iteration snapshots below."
             )
+        elif selected_room_label == ROOM2_LABEL:
+            with st.spinner("Running SARSA training on Room 2..."):
+                st.session_state[training_result_key] = algorithm.train(environment)
+            st.success(
+                "Room 2 training finished. Inspect the overview summary and "
+                "Episode Replay tab below."
+            )
         else:
             st.warning(
-                "Only Room 1 is implemented at this stage. The other rooms remain placeholders."
+                "Only Room 1 and Room 2 are implemented at this stage. "
+                "The other rooms remain placeholders."
             )
     if stop_button:
-        st.info(
-            "Training in Room 1 runs as a short planning step, so there is no active job to stop."
-        )
+        if selected_room_label == ROOM2_LABEL:
+            st.info(
+                "SARSA training runs to completion in one pass, so there is no "
+                "active job to stop mid-run."
+            )
+        else:
+            st.info(
+                "Training in Room 1 runs as a short planning step, so there is no "
+                "active job to stop."
+            )
 
     if room_definition["optional"]:
         st.sidebar.info("This room is optional and will be implemented after the core rooms.")
@@ -971,6 +1401,13 @@ def main() -> None:
                 )
             else:
                 _render_room1_training_result(room1_result)
+        elif selected_room_label == ROOM2_LABEL:
+            _render_room2_overview_grid(environment)
+            room2_result = st.session_state.get(training_result_key)
+            if room2_result is None:
+                st.info("Press 'Start Training' to run SARSA for Room 2.")
+            else:
+                _render_room2_training_summary(room2_result)
 
     with metrics_tab:
         if selected_room_label == ROOM1_LABEL:
@@ -979,6 +1416,12 @@ def main() -> None:
                 st.info("Training metrics will appear here after Room 1 finishes planning.")
             else:
                 _render_room1_metrics_tab(room1_result)
+        elif selected_room_label == ROOM2_LABEL:
+            room2_result = st.session_state.get(training_result_key)
+            if room2_result is None:
+                st.info("Training metrics will appear here after Room 2 finishes SARSA.")
+            else:
+                _render_room2_metrics_tab(room2_result)
         else:
             _render_placeholder_metrics_tab()
 
@@ -989,6 +1432,12 @@ def main() -> None:
                 st.info("Replay and iteration snapshots will appear after Room 1 training.")
             else:
                 _render_room1_replay_tab(room1_result)
+        elif selected_room_label == ROOM2_LABEL:
+            room2_result = st.session_state.get(training_result_key)
+            if room2_result is None:
+                st.info("Episode Replay will appear after Room 2 SARSA training.")
+            else:
+                _render_room2_episode_replay(room2_result)
         else:
             _render_placeholder_replay_tab()
 

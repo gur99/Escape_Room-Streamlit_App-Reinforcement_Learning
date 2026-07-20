@@ -52,6 +52,14 @@ class Room1DynamicProgrammingEnv(GridRoomBase):
     def __init__(self, config: Room1Config | None = None) -> None:
         # Always enforce the educational fixed config, ignoring user overrides.
         super().__init__(Room1Config())
+        self._setup_layout()
+
+    def _setup_layout(self) -> None:
+        """Place start, exit, walls, traps, and slippery cells.
+
+        Subclasses may override this method. ``__init__`` calls it exactly once.
+        """
+
         self.start_position = (0, 0)
         self.goal_position = (9, 9)
         # Multi-path maze with a horizontal wall band. The only passages through
